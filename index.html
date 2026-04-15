@@ -46,6 +46,7 @@
   .timeline-block { display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 600; font-size: 0.78em; text-align: center; line-height: 1.2; }
   .timeline-block.molar { background: #3182ce; }
   .timeline-block.premolar { background: #38a169; }
+  .timeline-block.conserv { background: #dd6b20; }
   .timeline-block.free { background: #edf2f7; color: #a0aec0; }
   .timeline-label { font-size: 0.82em; color: #4a5568; font-weight: 600; margin-bottom: 4px; }
   .timeline-earnings { font-size: 0.85em; color: #2d3748; font-weight: 700; }
@@ -153,6 +154,22 @@
         </div>
       </div>
     </div>
+    <div class="slider-grid" style="grid-template-columns:1fr;">
+      <div class="slider-group" style="background:linear-gradient(135deg,#fffaf0,#feebc8);border:1px solid #dd6b20;">
+        <label style="color:#c05621;">% Lavoro Conservativo (Otturazioni) nella Giornata</label>
+        <div style="font-size:0.78em;color:#975a16;margin-bottom:8px;">Stima: 1 otturazione = 45 min · Compenso ~€34 · €45,33/ora</div>
+        <div class="slider-row">
+          <div class="slider-wrap">
+            <input type="range" id="cons-pct" min="0" max="70" step="5" value="0" style="accent-color:#dd6b20;">
+            <span class="slider-ref" id="ref-cons" data-label="Rif: 0%"></span>
+          </div>
+          <span class="slider-val" id="val-cons" style="color:#c05621;">0%<span class="slider-diff neutral" id="diff-cons">nessuna</span></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:0.78em;color:#975a16;margin-top:4px;">
+          <span>0% = solo endo</span><span>50% = metà e metà</span><span>70% = prevalenza conservativa</span>
+        </div>
+      </div>
+    </div>
     <div class="sim-results" id="sim-results"></div>
     <div class="pct-breakdown" id="pct-breakdown"></div>
     <div class="sim-note">Abbassare il costo del materiale = aumentare il tuo compenso. Trascina i cursori per simulare scenari diversi.</div>
@@ -174,6 +191,7 @@
     <div style="display:flex;gap:16px;margin-top:14px;font-size:0.82em;">
       <span><span style="display:inline-block;width:14px;height:14px;background:#3182ce;border-radius:3px;vertical-align:middle;margin-right:4px;"></span> Molare (CC3+RPE)</span>
       <span><span style="display:inline-block;width:14px;height:14px;background:#38a169;border-radius:3px;vertical-align:middle;margin-right:4px;"></span> Premolare (CC1+RPE)</span>
+      <span><span style="display:inline-block;width:14px;height:14px;background:#dd6b20;border-radius:3px;vertical-align:middle;margin-right:4px;"></span> Otturazione (45 min)</span>
     </div>
   </div>
 
@@ -197,6 +215,8 @@
 <script>
 // Base prices (fixed)
 const PRICE_CC3 = 350, PRICE_CC1 = 250, PRICE_RPE = 148;
+// Obturation (conservative): avg price €100, material €15, time 0.75h
+const PRICE_OTT = 100, DEF_MAT_OTT = 15, TIME_OTT = 0.75;
 // Default material costs
 const DEF_MAT_CC3 = 52.15, DEF_MAT_CC1 = 43.15, DEF_MAT_RPE = 28.05, DEF_PCT = 0.40;
 
@@ -207,9 +227,11 @@ function getParams() {
     matCC3: parseFloat(document.getElementById('mat-cc3').value),
     matCC1: parseFloat(document.getElementById('mat-cc1').value),
     matRPE: parseFloat(document.getElementById('mat-rpe').value),
-    pct: parseFloat(document.getElementById('pct').value) / 100
+    pct: parseFloat(document.getElementById('pct').value) / 100,
+    consPct: parseFloat(document.getElementById('cons-pct').value) / 100
   };
 }
+function calcOtt(pct) { return (PRICE_OTT - DEF_MAT_OTT) * pct; }
 
 function calcComp(price, mat, pct) { return (price - mat) * pct; }
 
@@ -279,6 +301,20 @@ document.getElementById('pct').addEventListener('input', e => {
   updateSliderDisplay('pct', parseFloat(e.target.value), '%');
   updateAll();
 });
+document.getElementById('cons-pct').addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  const valEl = document.getElementById('val-cons');
+  const diffEl = document.getElementById('diff-cons');
+  valEl.childNodes[0].textContent = v + '%';
+  if (v === 0) { diffEl.textContent = 'nessuna'; diffEl.className = 'slider-diff neutral'; }
+  else {
+    const consH = 9 * v / 100;
+    const nOtt = Math.floor(consH / TIME_OTT);
+    diffEl.textContent = nOtt + ' otturazioni · ' + consH.toFixed(1).replace('.',',') + 'h';
+    diffEl.className = 'slider-diff down';
+  }
+  updateAll();
+});
 
 // Position all reference markers on load
 window.addEventListener('load', () => { ['cc3','cc1','rpe','pct'].forEach(positionRef); });
@@ -287,11 +323,33 @@ window.addEventListener('resize', () => { ['cc3','cc1','rpe','pct'].forEach(posi
 // Simulator results
 function renderSimResults() {
   const c = calcAll();
+  const p = getParams();
   const diffM = c.molar - c.defMolar;
   const diffP = c.premolar - c.defPremolar;
-  const best = 2 * c.molar + 3 * c.premolar; // best combo
+  const compOtt = calcOtt(p.pct);
+  const consH = 9 * p.consPct;
+  const endoH = 9 - consH;
+  const nOtt = Math.floor(consH / TIME_OTT);
+  const ottEarnings = nOtt * compOtt;
+
+  // Best endo combo in remaining hours
+  let bestEndoE = 0;
+  for (let m = 0; m <= 4; m++) {
+    for (let pr = 0; pr <= 6; pr++) {
+      const h = m*2 + pr*1.5;
+      if (h <= endoH && (m+pr) > 0) { const e = m*c.molar+pr*c.premolar; if(e>bestEndoE) bestEndoE=e; }
+    }
+  }
+  const bestTotal = bestEndoE + ottEarnings;
   const defBest = 2 * c.defMolar + 3 * c.defPremolar;
-  const diffB = best - defBest;
+  const diffB = bestTotal - defBest;
+
+  let ottCard = '';
+  if (p.consPct > 0) {
+    ottCard = `<div class="sim-card" style="border-color:#dd6b20;"><div class="sim-label">Otturazioni (${nOtt}x · ${consH.toFixed(1).replace('.',',')}h)</div>
+      <div class="sim-value orange">${fmt(ottEarnings)}</div>
+      <div class="sim-diff negative">${fmt(compOtt)}/ott · ${fmt(compOtt/TIME_OTT)}/h</div></div>`;
+  }
 
   document.getElementById('sim-results').innerHTML = `
     <div class="sim-card"><div class="sim-label">Compenso Molare (CC3+RPE)</div>
@@ -304,8 +362,9 @@ function renderSimResults() {
       <div class="sim-value blue">${fmt(c.molar/2)}/h</div></div>
     <div class="sim-card"><div class="sim-label">Tariffa Oraria Premolare</div>
       <div class="sim-value green">${fmt(c.premolar/1.5)}/h</div></div>
-    <div class="sim-card"><div class="sim-label">Miglior Giornata (2M+3P)</div>
-      <div class="sim-value purple">${fmt(best)}</div>
+    ${ottCard}
+    <div class="sim-card"><div class="sim-label">Miglior Giornata${p.consPct>0?' (endo+cons)':' (2M+3P)'}</div>
+      <div class="sim-value purple">${fmt(bestTotal)}</div>
       <div class="sim-diff ${diffB>=0?'positive':'negative'}">${diffB>=0?'+':''}${fmt(diffB)} vs attuale</div></div>
   `;
 }
@@ -313,15 +372,21 @@ function renderSimResults() {
 // Hourly bars
 function renderHourlyBars() {
   const c = calcAll();
-  const maxRate = Math.max(c.premolar/1.5, c.molar/2, 51.11);
+  const p = getParams();
+  const compOtt = calcOtt(p.pct);
+  const ottRate = compOtt / TIME_OTT;
+  const maxRate = Math.max(c.premolar/1.5, c.molar/2, ottRate, 51.11);
   const prem_pct = (c.premolar/1.5)/maxRate*100;
   const mol_pct = (c.molar/2)/maxRate*100;
+  const ott_pct = ottRate/maxRate*100;
   const avg_pct = 51.11/maxRate*100;
   document.getElementById('hourly-bars').innerHTML = `
     <div class="hourly-row"><div class="hourly-label">Premolare (CC1+RPE)</div>
       <div class="hourly-bar-bg"><div class="hourly-bar" style="width:${prem_pct}%;background:linear-gradient(90deg,#48bb78,#38a169);">${fmt(c.premolar/1.5)}/h</div></div></div>
     <div class="hourly-row"><div class="hourly-label">Molare (CC3+RPE)</div>
       <div class="hourly-bar-bg"><div class="hourly-bar" style="width:${mol_pct}%;background:linear-gradient(90deg,#63b3ed,#3182ce);">${fmt(c.molar/2)}/h</div></div></div>
+    <div class="hourly-row"><div class="hourly-label">Otturazione (conservativa)</div>
+      <div class="hourly-bar-bg"><div class="hourly-bar" style="width:${ott_pct}%;background:linear-gradient(90deg,#ed8936,#dd6b20);">${fmt(ottRate)}/h</div></div></div>
     <div class="hourly-row"><div class="hourly-label">Media attuale</div>
       <div class="hourly-bar-bg"><div class="hourly-bar" style="width:${avg_pct}%;background:linear-gradient(90deg,#d69e2e,#b7791f);">${fmt(51.11)}/h</div></div>
       <div class="hourly-val" style="color:#b7791f;">*9h/giorno</div></div>
@@ -332,15 +397,22 @@ function renderHourlyBars() {
 var comboChart = null;
 function renderComboChart() {
   const c = calcAll();
+  const p = getParams();
+  const compOtt = calcOtt(p.pct);
+  const consH = 9 * p.consPct;
+  const endoH = 9 - consH;
+  const nOtt = Math.floor(consH / TIME_OTT);
+  const ottE = nOtt * compOtt;
   const combos = [];
   for (let m = 0; m <= 4; m++) {
-    for (let p = 0; p <= 6; p++) {
-      const h = m*2 + p*1.5;
-      if (h <= 9 && (m+p) > 0) combos.push({m,p,h,e:m*c.molar+p*c.premolar});
+    for (let pr = 0; pr <= 6; pr++) {
+      const h = m*2 + pr*1.5;
+      if (h <= endoH && (m+pr) > 0) combos.push({m,p:pr,h,e:m*c.molar+pr*c.premolar+ottE});
     }
   }
+  if (p.consPct > 0) combos.push({m:0,p:0,h:0,e:ottE});
   combos.sort((a,b) => a.e - b.e);
-  const labels = combos.map(x => x.m+'M+'+x.p+'P');
+  const labels = combos.map(x => { let l=x.m+'M+'+x.p+'P'; if(nOtt>0) l+='+'+nOtt+'O'; return l; });
   const data = combos.map(x => x.e);
   const colors = combos.map(x => x.e >= 700 ? '#38a169' : x.e >= 660 ? '#d69e2e' : '#90cdf4');
 
@@ -363,27 +435,53 @@ function renderComboChart() {
   });
 }
 
-// Timelines — ALL combos that fit in 9 hours, sorted by earnings
+// Timelines — ALL combos that fit in available hours, sorted by earnings
 function renderTimelines() {
   const c = calcAll();
+  const p = getParams();
+  const compOtt = calcOtt(p.pct);
+  const consH = 9 * p.consPct;
+  const endoH = 9 - consH;
+  const nOtt = Math.floor(consH / TIME_OTT);
+  const ottEarnings = nOtt * compOtt;
+  const actualConsH = nOtt * TIME_OTT;
+
   const allCombos = [];
   for (let m = 0; m <= 4; m++) {
-    for (let p = 0; p <= 6; p++) {
-      const h = m * 2 + p * 1.5;
-      if (h <= 9 && (m + p) > 0) {
-        allCombos.push({ m, p, h, free: 9 - h, e: m * c.molar + p * c.premolar });
+    for (let pr = 0; pr <= 6; pr++) {
+      const h = m * 2 + pr * 1.5;
+      if (h <= endoH && (m + pr) > 0) {
+        const totalH = h + actualConsH;
+        allCombos.push({ m, p: pr, h: totalH, endoH: h, consH: actualConsH, nOtt, free: 9 - totalH, e: m * c.molar + pr * c.premolar + ottEarnings });
       }
     }
+  }
+  // If only conservative work (no endo)
+  if (p.consPct > 0) {
+    allCombos.push({ m: 0, p: 0, h: actualConsH, endoH: 0, consH: actualConsH, nOtt, free: 9 - actualConsH, e: ottEarnings });
   }
   allCombos.sort((a, b) => b.e - a.e);
 
   let html = '';
+  if (p.consPct > 0) {
+    html += `<div style="background:#fffaf0;border:1px solid #dd6b20;border-radius:8px;padding:8px 12px;margin-bottom:14px;font-size:0.85em;color:#975a16;">
+      <strong>${Math.round(p.consPct*100)}% conservativa:</strong> ${nOtt} otturazioni · ${actualConsH.toFixed(1).replace('.',',')}h · ${fmt(ottEarnings)} — Ore endo disponibili: ${endoH.toFixed(1).replace('.',',')}h
+    </div>`;
+  }
+
   allCombos.forEach((opt, i) => {
     const letter = String.fromCharCode(65 + i);
     const mBlocks = Array(opt.m).fill(`<div class="timeline-block molar" style="width:${(2/9*100).toFixed(1)}%">Molare<br>2h</div>`).join('');
     const pBlocks = Array(opt.p).fill(`<div class="timeline-block premolar" style="width:${(1.5/9*100).toFixed(1)}%">Prem.<br>1,5h</div>`).join('');
+    const cBlocks = opt.nOtt > 0 ? Array(opt.nOtt).fill(`<div class="timeline-block conserv" style="width:${(TIME_OTT/9*100).toFixed(1)}%">Ott.<br>45m</div>`).join('') : '';
     const fBlock = opt.free > 0.01 ? `<div class="timeline-block free" style="width:${(opt.free/9*100).toFixed(1)}%">${opt.free >= 1 ? 'Libero<br>' : ''}${opt.free.toFixed(1).replace('.',',')}h</div>` : '';
-    const desc = opt.m > 0 && opt.p > 0 ? `${opt.m} Molari + ${opt.p} Premolari` : opt.p > 0 ? `${opt.p} Premolari` : `${opt.m} Molari`;
+
+    let desc = '';
+    const parts = [];
+    if (opt.m > 0) parts.push(`${opt.m} Molari`);
+    if (opt.p > 0) parts.push(`${opt.p} Premolari`);
+    if (opt.nOtt > 0) parts.push(`${opt.nOtt} Otturazioni`);
+    desc = parts.join(' + ');
     const freeText = opt.free > 0.01 ? ` · ${opt.free.toFixed(1).replace('.',',')}h libere` : ' · giornata piena';
     const isWinner = opt.e >= 700;
     const borderStyle = isWinner ? 'border: 2px solid #38a169; border-radius: 10px; padding: 10px; background: linear-gradient(135deg, #f0fff4, #e6fffa);' : 'padding: 10px;';
@@ -393,7 +491,7 @@ function renderTimelines() {
         <div class="timeline-label" style="margin:0;">${letter}. ${desc}${freeText}</div>
         <div style="font-size:1.1em;font-weight:800;color:${isWinner ? '#38a169' : opt.e >= 660 ? '#d69e2e' : '#4a5568'};">${fmt(opt.e)}${isWinner ? ' ✓' : ''}</div>
       </div>
-      <div class="timeline-track">${mBlocks}${pBlocks}${fBlock}</div>
+      <div class="timeline-track">${mBlocks}${pBlocks}${cBlocks}${fBlock}</div>
     </div>`;
   });
   document.getElementById('timelines').innerHTML = html;
@@ -402,20 +500,33 @@ function renderTimelines() {
 // Combo cards — dynamic, shows top winners and near-misses
 function renderComboCards() {
   const c = calcAll();
+  const p = getParams();
+  const compOtt = calcOtt(p.pct);
+  const consH = 9 * p.consPct;
+  const endoH = 9 - consH;
+  const nOtt = Math.floor(consH / TIME_OTT);
+  const ottE = nOtt * compOtt;
+  const actualConsH = nOtt * TIME_OTT;
   const allCombos = [];
   for (let m = 0; m <= 4; m++) {
-    for (let p = 0; p <= 6; p++) {
-      const h = m * 2 + p * 1.5;
-      if (h <= 9 && (m + p) > 0) {
-        allCombos.push({ m, p, h, free: 9 - h, e: m * c.molar + p * c.premolar });
+    for (let pr = 0; pr <= 6; pr++) {
+      const h = m * 2 + pr * 1.5;
+      if (h <= endoH && (m + pr) > 0) {
+        const totalH = h + actualConsH;
+        allCombos.push({ m, p: pr, nOtt, h: totalH, free: 9 - totalH, e: m * c.molar + pr * c.premolar + ottE });
       }
     }
   }
+  if (p.consPct > 0) allCombos.push({ m:0, p:0, nOtt, h:actualConsH, free:9-actualConsH, e:ottE });
   allCombos.sort((a, b) => b.e - a.e);
 
   let html = '';
   allCombos.forEach(w => {
-    const name = w.m > 0 && w.p > 0 ? `${w.m} Molari + ${w.p} Premolari` : w.p > 0 ? `${w.p} Premolari` : `${w.m} Molari`;
+    const parts = [];
+    if (w.m > 0) parts.push(`${w.m} Molari`);
+    if (w.p > 0) parts.push(`${w.p} Premolari`);
+    if (w.nOtt > 0) parts.push(`${w.nOtt} Otturazioni`);
+    const name = parts.join(' + ');
     const freeText = w.free > 0.01 ? `${w.h.toFixed(1).replace('.',',')} ore · ${w.free.toFixed(1).replace('.',',')}h libere` : `${w.h.toFixed(1).replace('.',',')} ore · giornata piena`;
     const isWinner = w.e >= 700;
     const isClose = !isWinner && w.e >= 660;
