@@ -329,25 +329,32 @@ function renderSimResults() {
   const compOtt = calcOtt(p.pct);
   const consH = 9 * p.consPct;
   const endoH = 9 - consH;
-  const nOtt = Math.floor(consH / TIME_OTT);
-  const ottEarnings = nOtt * compOtt;
+  const nOttScheduled = Math.floor(consH / TIME_OTT);
 
-  // Best endo combo in remaining hours
-  let bestEndoE = 0;
+  // Best endo combo in remaining hours, with gaps auto-filled
+  let bestTotal = 0, bestM = 0, bestP = 0, bestF = null;
   for (let m = 0; m <= 4; m++) {
     for (let pr = 0; pr <= 6; pr++) {
       const h = m*2 + pr*1.5;
-      if (h <= endoH && (m+pr) > 0) { const e = m*c.molar+pr*c.premolar; if(e>bestEndoE) bestEndoE=e; }
+      if (h <= endoH && (m+pr) > 0) {
+        const f = fillGaps(h, nOttScheduled, compOtt);
+        const tot = m*c.molar + pr*c.premolar + f.ottE;
+        if (tot > bestTotal) { bestTotal = tot; bestM = m; bestP = pr; bestF = f; }
+      }
     }
   }
-  const bestTotal = bestEndoE + ottEarnings;
+  // Also check only-conservative
+  const f0 = fillGaps(0, nOttScheduled, compOtt);
+  if (f0.ottE > bestTotal) { bestTotal = f0.ottE; bestM = 0; bestP = 0; bestF = f0; }
+
   const defBest = 2 * c.defMolar + 3 * c.defPremolar;
   const diffB = bestTotal - defBest;
 
   let ottCard = '';
-  if (p.consPct > 0) {
-    ottCard = `<div class="sim-card" style="border-color:#dd6b20;"><div class="sim-label">Otturazioni (${nOtt}x · ${consH.toFixed(1).replace('.',',')}h)</div>
-      <div class="sim-value orange">${fmt(ottEarnings)}</div>
+  if (bestF && bestF.totalOtt > 0) {
+    const ottH = bestF.totalOtt * TIME_OTT;
+    ottCard = `<div class="sim-card" style="border-color:#dd6b20;"><div class="sim-label">Otturazioni nella miglior giornata (${bestF.totalOtt}x · ${ottH.toFixed(1).replace('.',',')}h)</div>
+      <div class="sim-value orange">${fmt(bestF.ottE)}</div>
       <div class="sim-diff negative">${fmt(compOtt)}/ott · ${fmt(compOtt/TIME_OTT)}/h</div></div>`;
   }
 
@@ -363,7 +370,7 @@ function renderSimResults() {
     <div class="sim-card"><div class="sim-label">Tariffa Oraria Premolare</div>
       <div class="sim-value green">${fmt(c.premolar/1.5)}/h</div></div>
     ${ottCard}
-    <div class="sim-card"><div class="sim-label">Miglior Giornata${p.consPct>0?' (endo+cons)':' (2M+3P)'}</div>
+    <div class="sim-card"><div class="sim-label">Miglior Giornata (${bestM}M+${bestP}P${bestF&&bestF.totalOtt>0?'+'+bestF.totalOtt+'O':''})</div>
       <div class="sim-value purple">${fmt(bestTotal)}</div>
       <div class="sim-diff ${diffB>=0?'positive':'negative'}">${diffB>=0?'+':''}${fmt(diffB)} vs attuale</div></div>
   `;
@@ -393,6 +400,16 @@ function renderHourlyBars() {
   `;
 }
 
+// Helper: fill gaps with obturations
+function fillGaps(endoH, scheduledOtt, compOtt) {
+  const gap = 9 - endoH - scheduledOtt * TIME_OTT;
+  const extraOtt = Math.floor(gap / TIME_OTT);
+  const totalOtt = scheduledOtt + extraOtt;
+  const totalOttH = totalOtt * TIME_OTT;
+  const free = 9 - endoH - totalOttH;
+  return { totalOtt, extraOtt, ottE: totalOtt * compOtt, free };
+}
+
 // Combo chart
 var comboChart = null;
 function renderComboChart() {
@@ -401,18 +418,22 @@ function renderComboChart() {
   const compOtt = calcOtt(p.pct);
   const consH = 9 * p.consPct;
   const endoH = 9 - consH;
-  const nOtt = Math.floor(consH / TIME_OTT);
-  const ottE = nOtt * compOtt;
+  const nOttScheduled = Math.floor(consH / TIME_OTT);
   const combos = [];
   for (let m = 0; m <= 4; m++) {
     for (let pr = 0; pr <= 6; pr++) {
       const h = m*2 + pr*1.5;
-      if (h <= endoH && (m+pr) > 0) combos.push({m,p:pr,h,e:m*c.molar+pr*c.premolar+ottE});
+      if (h <= endoH && (m+pr) > 0) {
+        const f = fillGaps(h, nOttScheduled, compOtt);
+        combos.push({m,p:pr,h,nOtt:f.totalOtt,e:m*c.molar+pr*c.premolar+f.ottE});
+      }
     }
   }
-  if (p.consPct > 0) combos.push({m:0,p:0,h:0,e:ottE});
+  // Only conservative
+  const f0 = fillGaps(0, nOttScheduled, compOtt);
+  combos.push({m:0,p:0,h:0,nOtt:f0.totalOtt,e:f0.ottE});
   combos.sort((a,b) => a.e - b.e);
-  const labels = combos.map(x => { let l=x.m+'M+'+x.p+'P'; if(nOtt>0) l+='+'+nOtt+'O'; return l; });
+  const labels = combos.map(x => { let l=x.m+'M+'+x.p+'P'; if(x.nOtt>0) l+='+'+x.nOtt+'O'; return l; });
   const data = combos.map(x => x.e);
   const colors = combos.map(x => x.e >= 700 ? '#38a169' : x.e >= 660 ? '#d69e2e' : '#90cdf4');
 
@@ -435,37 +456,39 @@ function renderComboChart() {
   });
 }
 
-// Timelines — ALL combos that fit in available hours, sorted by earnings
+// Timelines — ALL combos, gaps auto-filled with obturations
 function renderTimelines() {
   const c = calcAll();
   const p = getParams();
   const compOtt = calcOtt(p.pct);
   const consH = 9 * p.consPct;
   const endoH = 9 - consH;
-  const nOtt = Math.floor(consH / TIME_OTT);
-  const ottEarnings = nOtt * compOtt;
-  const actualConsH = nOtt * TIME_OTT;
+  const nOttScheduled = Math.floor(consH / TIME_OTT);
 
   const allCombos = [];
   for (let m = 0; m <= 4; m++) {
     for (let pr = 0; pr <= 6; pr++) {
       const h = m * 2 + pr * 1.5;
       if (h <= endoH && (m + pr) > 0) {
-        const totalH = h + actualConsH;
-        allCombos.push({ m, p: pr, h: totalH, endoH: h, consH: actualConsH, nOtt, free: 9 - totalH, e: m * c.molar + pr * c.premolar + ottEarnings });
+        const f = fillGaps(h, nOttScheduled, compOtt);
+        allCombos.push({ m, p: pr, nOtt: f.totalOtt, free: f.free, e: m * c.molar + pr * c.premolar + f.ottE });
       }
     }
   }
-  // If only conservative work (no endo)
-  if (p.consPct > 0) {
-    allCombos.push({ m: 0, p: 0, h: actualConsH, endoH: 0, consH: actualConsH, nOtt, free: 9 - actualConsH, e: ottEarnings });
-  }
+  // Only conservative (no endo)
+  const f0 = fillGaps(0, nOttScheduled, compOtt);
+  allCombos.push({ m: 0, p: 0, nOtt: f0.totalOtt, free: f0.free, e: f0.ottE });
   allCombos.sort((a, b) => b.e - a.e);
 
   let html = '';
   if (p.consPct > 0) {
+    const schedH = (nOttScheduled * TIME_OTT);
     html += `<div style="background:#fffaf0;border:1px solid #dd6b20;border-radius:8px;padding:8px 12px;margin-bottom:14px;font-size:0.85em;color:#975a16;">
-      <strong>${Math.round(p.consPct*100)}% conservativa:</strong> ${nOtt} otturazioni · ${actualConsH.toFixed(1).replace('.',',')}h · ${fmt(ottEarnings)} — Ore endo disponibili: ${endoH.toFixed(1).replace('.',',')}h
+      <strong>${Math.round(p.consPct*100)}% conservativa programmata</strong> + riempimento automatico dei vuoti con otturazioni
+    </div>`;
+  } else {
+    html += `<div style="background:#fffaf0;border:1px solid #dd6b20;border-radius:8px;padding:8px 12px;margin-bottom:14px;font-size:0.85em;color:#975a16;">
+      I vuoti vengono riempiti automaticamente con otturazioni (45 min ciascuna)
     </div>`;
   }
 
@@ -474,15 +497,14 @@ function renderTimelines() {
     const mBlocks = Array(opt.m).fill(`<div class="timeline-block molar" style="width:${(2/9*100).toFixed(1)}%">Molare<br>2h</div>`).join('');
     const pBlocks = Array(opt.p).fill(`<div class="timeline-block premolar" style="width:${(1.5/9*100).toFixed(1)}%">Prem.<br>1,5h</div>`).join('');
     const cBlocks = opt.nOtt > 0 ? Array(opt.nOtt).fill(`<div class="timeline-block conserv" style="width:${(TIME_OTT/9*100).toFixed(1)}%">Ott.<br>45m</div>`).join('') : '';
-    const fBlock = opt.free > 0.01 ? `<div class="timeline-block free" style="width:${(opt.free/9*100).toFixed(1)}%">${opt.free >= 1 ? 'Libero<br>' : ''}${opt.free.toFixed(1).replace('.',',')}h</div>` : '';
+    const fBlock = opt.free > 0.01 ? `<div class="timeline-block free" style="width:${(opt.free/9*100).toFixed(1)}%">${opt.free.toFixed(1).replace('.',',')}h</div>` : '';
 
-    let desc = '';
     const parts = [];
     if (opt.m > 0) parts.push(`${opt.m} Molari`);
     if (opt.p > 0) parts.push(`${opt.p} Premolari`);
     if (opt.nOtt > 0) parts.push(`${opt.nOtt} Otturazioni`);
-    desc = parts.join(' + ');
-    const freeText = opt.free > 0.01 ? ` · ${opt.free.toFixed(1).replace('.',',')}h libere` : ' · giornata piena';
+    const desc = parts.join(' + ');
+    const freeText = opt.free > 0.01 ? ` · ${opt.free.toFixed(1).replace('.',',')}h residue (<45min)` : ' · giornata piena';
     const isWinner = opt.e >= 700;
     const borderStyle = isWinner ? 'border: 2px solid #38a169; border-radius: 10px; padding: 10px; background: linear-gradient(135deg, #f0fff4, #e6fffa);' : 'padding: 10px;';
 
@@ -504,20 +526,19 @@ function renderComboCards() {
   const compOtt = calcOtt(p.pct);
   const consH = 9 * p.consPct;
   const endoH = 9 - consH;
-  const nOtt = Math.floor(consH / TIME_OTT);
-  const ottE = nOtt * compOtt;
-  const actualConsH = nOtt * TIME_OTT;
+  const nOttScheduled = Math.floor(consH / TIME_OTT);
   const allCombos = [];
   for (let m = 0; m <= 4; m++) {
     for (let pr = 0; pr <= 6; pr++) {
       const h = m * 2 + pr * 1.5;
       if (h <= endoH && (m + pr) > 0) {
-        const totalH = h + actualConsH;
-        allCombos.push({ m, p: pr, nOtt, h: totalH, free: 9 - totalH, e: m * c.molar + pr * c.premolar + ottE });
+        const f = fillGaps(h, nOttScheduled, compOtt);
+        allCombos.push({ m, p: pr, nOtt: f.totalOtt, free: f.free, e: m * c.molar + pr * c.premolar + f.ottE });
       }
     }
   }
-  if (p.consPct > 0) allCombos.push({ m:0, p:0, nOtt, h:actualConsH, free:9-actualConsH, e:ottE });
+  const f0 = fillGaps(0, nOttScheduled, compOtt);
+  allCombos.push({ m:0, p:0, nOtt:f0.totalOtt, free:f0.free, e:f0.ottE });
   allCombos.sort((a, b) => b.e - a.e);
 
   let html = '';
@@ -527,7 +548,8 @@ function renderComboCards() {
     if (w.p > 0) parts.push(`${w.p} Premolari`);
     if (w.nOtt > 0) parts.push(`${w.nOtt} Otturazioni`);
     const name = parts.join(' + ');
-    const freeText = w.free > 0.01 ? `${w.h.toFixed(1).replace('.',',')} ore · ${w.free.toFixed(1).replace('.',',')}h libere` : `${w.h.toFixed(1).replace('.',',')} ore · giornata piena`;
+    const totalH = w.m * 2 + w.p * 1.5 + w.nOtt * TIME_OTT;
+    const freeText = w.free > 0.01 ? `${totalH.toFixed(1).replace('.',',')} ore · ${w.free.toFixed(1).replace('.',',')}h libere` : `${totalH.toFixed(1).replace('.',',')} ore · giornata piena`;
     const isWinner = w.e >= 700;
     const isClose = !isWinner && w.e >= 660;
     const cls = isWinner ? 'winner' : isClose ? 'close' : 'below';
